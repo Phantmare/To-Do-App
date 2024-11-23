@@ -1,226 +1,199 @@
-import React, { useState, useEffect } from "react"
+import { useState, useEffect } from "react"
 import { useAuth0 } from "@auth0/auth0-react"
-import { collection, addDoc, updateDoc, deleteDoc, getDocs, doc } from "firebase/firestore"
+import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore"
 import { db } from "./firebaseConfig"
 
 export default function ToDoApp() {
-  const { logout, user, isAuthenticated } = useAuth0()
-  const [toDoApp, setToDoApp] = useState([])
-  const [userInput, setUserInput] = useState("")
-  const [categoryInput, setCategoryInput] = useState("")
-  const [selectedCategory, setSelectedCategory] = useState("")
+  const { user, logout, isAuthenticated } = useAuth0()
   const [categories, setCategories] = useState([])
-  const [taskBeingEdited, setTaskBeingEdited] = useState(null)
-  const [editedTaskInput, setEditedTaskInput] = useState("")
+  const [categoryInput, setCategoryInput] = useState('')
+  const [taskInput, setTaskInput] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState('')
+  const [tasks, setTasks] = useState({})
+  const [warningMessage, setWarningMessage] = useState('')
+  const [editingTask, setEditingTask] = useState(null)
+  const [editedTaskValue, setEditedTaskValue] = useState('')
 
-  const userId = isAuthenticated ? user.email : null
 
-  useEffect(function() {
-    if (isAuthenticated) {
-      fetchTasks()
-      fetchCategories()
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      checkAndLoadUserData(user.email)
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, user])
 
-  function fetchTasks() {
-    if (!userId) return
-    const tasksRef = collection(db, "users", userId, "tasks")
-    getDocs(tasksRef).then(function(querySnapshot) {
-      const tasks = querySnapshot.docs.map(function(doc) {
-        return { id: doc.id, ...doc.data() }
-      })
-      setToDoApp(tasks)
+  function checkAndLoadUserData(email) {
+    const userRef = doc(db, "users", email)
+    getDoc(userRef).then(docSnap => {
+      if (!docSnap.exists()) {
+        setDoc(userRef, {
+          email: email,
+          createdAt: new Date(),
+          categories: [],
+          tasks: {}
+        }).catch((error) => {
+          console.error("Error creating user in Firestore:", error)
+        })
+      } else {
+        const userData = docSnap.data()
+        setCategories(userData.categories || [])
+        setTasks(userData.tasks || {})
+      }
+    }).catch((error) => {
+      console.error("Error checking user in Firestore:", error)
     })
   }
 
-  function fetchCategories() {
-    if (!userId) return
-    const categoriesRef = collection(db, "users", userId, "categories")
-    getDocs(categoriesRef).then(function(querySnapshot) {
-      const fetchedCategories = querySnapshot.docs.map(function(doc) {
-        return doc.data().name
-      })
-      setCategories(fetchedCategories)
-    })
-  }
-
-  function handleSubmit(e) {
-    e.preventDefault()
-    if (userInput.trim() && selectedCategory) {
-      const newTask = { description: userInput, category: selectedCategory }
-      const tasksRef = collection(db, "users", userId, "tasks")
-      addDoc(tasksRef, newTask).then(function(docRef) {
-        setToDoApp([...toDoApp, { id: docRef.id, ...newTask }])
-        setUserInput("")
-      }).catch(function(e) {
-        console.error("Error adding task: ", e)
-      })
-    }
-  }
-
-  function handleAddCategory(e) {
-    e.preventDefault()
-    if (categoryInput.trim() && !categories.includes(categoryInput)) {
-      const newCategory = { name: categoryInput }
-      const categoriesRef = collection(db, "users", userId, "categories")
-      addDoc(categoriesRef, newCategory).then(function() {
-        setCategories([...categories, categoryInput])
-        setCategoryInput("")
-      }).catch(function(e) {
-        console.error("Error adding category: ", e)
-      })
+  function addCategory() {
+    if (categoryInput && !categories.includes(categoryInput)) {
+      const newCategories = [...categories, categoryInput]
+      setCategories(newCategories)
+      setTasks({ ...tasks, [categoryInput]: [] })
+      updateUserData({ categories: newCategories, tasks })
+      setCategoryInput('')
     }
   }
 
-  function handleSubmitEdit(e) {
-    e.preventDefault()
-    const taskRef = doc(db, "users", userId, "tasks", taskBeingEdited)
-    updateDoc(taskRef, { description: editedTaskInput }).then(function() {
-      setToDoApp(toDoApp.map(function(task) {
-        return task.id === taskBeingEdited ? { ...task, description: editedTaskInput } : task
-      }))
-      setTaskBeingEdited(null)
-      setEditedTaskInput("")
-    }).catch(function(e) {
-      console.error("Error updating task: ", e)
-    })
+  function removeCategory(category) {
+    const newCategories = categories.filter(cat => cat !== category)
+    const newTasks = { ...tasks }
+    delete newTasks[category]
+    setCategories(newCategories)
+    setTasks(newTasks)
+    updateUserData({ categories: newCategories, tasks: newTasks })
+    if (selectedCategory === category) {
+      setSelectedCategory('')
+    }
   }
 
-  function handleDeleteTask(taskId) {
-    const taskRef = doc(db, "users", userId, "tasks", taskId)
-    deleteDoc(taskRef).then(function() {
-      setToDoApp(toDoApp.filter(function(task) {
-        return task.id !== taskId
-      }))
-    }).catch(function(e) {
-      console.error("Error deleting task: ", e)
-    })
+  function addTask() {
+    if (!selectedCategory) {
+      setWarningMessage('Please select a category to add a task')
+      return
+    }
+    if (taskInput) {
+      const newTasks = { ...tasks, [selectedCategory]: [...tasks[selectedCategory], taskInput] }
+      setTasks(newTasks)
+      updateUserData({ categories, tasks: newTasks })
+      setTaskInput('')
+      setWarningMessage('')
+    }
   }
 
-  function handleDeleteCategory(category) {
-    setCategories(categories.filter(function(cat) {
-      return cat !== category
-    }))
-    setToDoApp(toDoApp.filter(function(task) {
-      return task.category !== category
-    }))
-    const tasksRef = collection(db, "users", userId, "tasks")
-    getDocs(tasksRef).then(function(querySnapshot) {
-      querySnapshot.forEach(function(doc) {
-        if (doc.data().category === category) {
-          deleteDoc(doc.ref)
-        }
+  function removeTask(task, category) {
+    const updatedTasks = tasks[category].filter(t => t !== task)
+    setTasks({ ...tasks, [category]: updatedTasks })
+    updateUserData({ categories, tasks: { ...tasks, [category]: updatedTasks } })
+  }
+
+  function startEditingTask(task, category) {
+    setEditingTask({ task: task, category: category })
+    setEditedTaskValue(task)
+  }
+
+  function saveEditedTask(category) {
+    const updatedTasks = tasks[category].map(task => task === editingTask.task ? editedTaskValue : task)
+    setTasks({ ...tasks, [category]: updatedTasks })
+    updateUserData({ categories, tasks: { ...tasks, [category]: updatedTasks } })
+    setEditingTask(null)
+    setEditedTaskValue('')
+  }
+
+  function cancelEditing() {
+    setEditingTask(null)
+    setEditedTaskValue('')
+  }
+
+  function updateUserData(data) {
+    if (user) {
+      const userRef = doc(db, "users", user.email)
+      updateDoc(userRef, data).catch((error) => {
+        console.error("Error updating user data:", error)
       })
-    }).catch(function(e) {
-      console.error("Error deleting category: ", e)
-    })
-
-    const categoriesRef = collection(db, "users", userId, "categories")
-    getDocs(categoriesRef).then(function(querySnapshot) {
-      querySnapshot.forEach(function(doc) {
-        if (doc.data().name === category) {
-          deleteDoc(doc.ref)
-        }
-      })
-    }).catch(function(e) {
-      console.error("Error deleting category from Firestore: ", e)
-    })
+    }
   }
-
-  const filteredTasks = selectedCategory
-    ? toDoApp.filter(function(task) {
-      return task.category === selectedCategory
-    })
-    : toDoApp
-
-  const isAddTaskDisabled = !selectedCategory
-  const showWarning = isAddTaskDisabled
 
   return (
     <div className="to-do-app">
-      {isAuthenticated && (
+      {isAuthenticated && user && (
         <div className="user-info">
-          <h3>Welcome, {user.name}!</h3>
-          <button onClick={function() { logout({ returnTo: window.location.origin }) }}>
-            Log Out
-          </button>
+          <h3>Welcome, {user.email}!</h3>
+          <button onClick={() => logout({ returnTo: window.location.origin })}>Logout</button>
         </div>
       )}
 
-      <form className="category-form" onSubmit={handleAddCategory}>
+      <h3>To-Do List</h3>
+
+      <form onSubmit={(e) => {
+        e.preventDefault()
+        addCategory()
+      }}>
         <input
-          value={categoryInput}
-          onChange={function(e) { setCategoryInput(e.target.value) }}
           type="text"
           placeholder="New Category"
+          value={categoryInput}
+          onChange={(e) => setCategoryInput(e.target.value)}
         />
         <button type="submit">Add Category</button>
       </form>
 
       <div className="categories">
-        <h3>Categories:</h3>
         <ul>
-          {categories.map(function(category, index) {
-            return (
-              <li key={index}>
-                {category}{" "}
-                <button onClick={function() { handleDeleteCategory(category) }}>Delete</button>
-              </li>
-            )
-          })}
+          {categories.map(category => (
+            <li key={category}>
+              {category}
+              <button onClick={() => removeCategory(category)}>Remove</button>
+            </li>
+          ))}
         </ul>
       </div>
 
-      <form className="task-form" onSubmit={handleSubmit}>
-        <input
-          value={userInput}
-          onChange={function(e) { setUserInput(e.target.value) }}
-          type="text"
-          placeholder="New Task"
-        />
-        <select onChange={function(e) { setSelectedCategory(e.target.value) }} value={selectedCategory}>
-          <option value="">Select Category</option>
-          {categories.map(function(category, index) {
-            return (
-              <option key={index} value={category}>{category}</option>
-            )
-          })}
-        </select>
-        <button type="submit" disabled={isAddTaskDisabled}>
-          Add Task
-        </button>
-      </form>
-
-      {showWarning && (
-        <p style={{ color: "red", fontSize: "12px" }}>
-          Please select a category and enter a task.
-        </p>
+      {categories.length > 0 && (
+        <div className="task-form">
+          <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}>
+            <option value="">Select Category</option>
+            {categories.map(category => (
+              <option key={category} value={category}>{category}</option>
+            ))}
+          </select>
+          <input
+            type="text"
+            placeholder="New Task"
+            value={taskInput}
+            onChange={(e) => setTaskInput(e.target.value)}
+          />
+          <button onClick={addTask}>Add Task</button>
+          {warningMessage && <p style={{ color: 'red' }}>{warningMessage}</p>}
+        </div>
       )}
 
-      <ul>
-        {filteredTasks.map(function(task) {
-          return (
-            <li key={task.id}>
-              {taskBeingEdited === task.id ? (
-                <form onSubmit={handleSubmitEdit}>
-                  <input
-                    value={editedTaskInput}
-                    onChange={function(e) { setEditedTaskInput(e.target.value) }}
-                  />
-                  <button type="submit">Save</button>
-                  <button onClick={function() { setTaskBeingEdited(null) }}>Cancel</button>
-                </form>
-              ) : (
-                <>
-                  <span>{task.description} - {task.category}</span> 
-                  <button onClick={function() { setTaskBeingEdited(task.id) }}>Edit</button>
-                  <button onClick={function() { handleDeleteTask(task.id) }}>Delete</button>
-                </>
-              )}
-            </li>
-          )
-        })}
-      </ul>
+      {selectedCategory && (
+        <div>
+          <h4>{selectedCategory} Tasks</h4>
+          <ul>
+            {tasks[selectedCategory]?.map((task, index) => (
+              <li key={index}>
+                {editingTask?.task === task ? (
+                  <div>
+                    <input
+                      type="text"
+                      value={editedTaskValue}
+                      onChange={(e) => setEditedTaskValue(e.target.value)}
+                    />
+                    <button onClick={() => saveEditedTask(selectedCategory)}>Save</button>
+                    <button onClick={cancelEditing}>Cancel</button>
+                  </div>
+                ) : (
+                  <div>
+                    <span>{task}</span>
+                    <button onClick={() => startEditingTask(task, selectedCategory)}>Edit Task</button>
+                    <button onClick={() => removeTask(task, selectedCategory)}>Remove Task</button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
